@@ -3,6 +3,7 @@ from binascii import hexlify
 import json
 import six
 import sys
+import os
 
 import requests
 from requests_hawk import HawkAuth
@@ -13,8 +14,8 @@ from fxa.core import Client as FxAClient
 # it just stays like that for now. The goal is simply to prove that it's
 # possible to get the data out of the API"""
 
-TOKENSERVER_URL = "https://token.services.mozilla.com/"
-FXA_SERVER_URL = "https://api.accounts.firefox.com"
+TOKENSERVER_URL = os.getenv("TOKENSERVER_URL", "https://token.services.mozilla.com/")
+FXA_SERVER_URL = os.getenv("FXA_SERVER_URL", "https://api.accounts.firefox.com")
 
 
 def encode_header(value):
