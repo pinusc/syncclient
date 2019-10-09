@@ -36,6 +36,16 @@ def get_browserid_assertion(login, password, fxa_server_url=FXA_SERVER_URL,
     """
     client = FxAClient(server_url=fxa_server_url)
     session = client.login(login, password, keys=True)
+    if not session.verified:
+        if session.verificationMethod == 'totp-2fa':
+            # ask for the verification code
+            v_code = raw_input("Please enter the TOTP code: ")
+            if not session.totp_verify(v_code):
+                raise SyncClientError("Wrong TOTP token")
+        else:
+            raise SyncClientError("Login verification method not supported: %s"
+                                  % (session.verificationMethod))
+
     bid_assertion = session.get_identity_assertion(tokenserver_url)
     _, keyB = session.fetch_keys()
     if isinstance(keyB, six.text_type):  # pragma: no cover
