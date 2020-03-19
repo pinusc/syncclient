@@ -6,6 +6,7 @@ import sys
 import os
 
 import requests
+import logging
 from requests_hawk import HawkAuth
 from fxa.core import Client as FxAClient
 
@@ -17,6 +18,14 @@ from fxa.core import Client as FxAClient
 TOKENSERVER_URL = os.getenv("TOKENSERVER_URL", "https://token.services.mozilla.com/")
 FXA_SERVER_URL = os.getenv("FXA_SERVER_URL", "https://api.accounts.firefox.com")
 
+try:
+    import http.client as http_client
+except ImportError:
+    # Python 2
+    import httplib as http_client
+
+def ensure_trace():
+    http_client.HTTPConnection.debuglevel = int(os.getenv("HTTP_TRACE", "0"))
 
 def encode_header(value):
     if isinstance(value, str):
@@ -34,6 +43,7 @@ def get_browserid_assertion(login, password, fxa_server_url=FXA_SERVER_URL,
     """Trade a user and password for a BrowserID assertion and the client
     state.
     """
+    ensure_trace()
     client = FxAClient(server_url=fxa_server_url)
     session = client.login(login, password, keys=True)
     if not session.verified:
@@ -62,6 +72,7 @@ class TokenserverClient(object):
     """
     def __init__(self, bid_assertion, client_state,
                  server_url=TOKENSERVER_URL, verify=None):
+        ensure_trace()
         self.bid_assertion = bid_assertion
         self.client_state = client_state
         self.server_url = server_url
@@ -92,6 +103,8 @@ class SyncClient(object):
 
     def __init__(self, bid_assertion=None, client_state=None,
                  tokenserver_url=TOKENSERVER_URL, verify=None, **credentials):
+
+        ensure_trace()
 
         if bid_assertion is not None and client_state is not None:
             ts_client = TokenserverClient(bid_assertion, client_state,
