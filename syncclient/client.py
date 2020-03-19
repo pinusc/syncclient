@@ -1,5 +1,5 @@
 from hashlib import sha256
-from binascii import hexlify
+from binascii import hexlify, unhexlify
 import json
 import six
 import sys
@@ -9,6 +9,8 @@ import requests
 import logging
 from requests_hawk import HawkAuth
 from fxa.core import Client as FxAClient
+from fxa.core import Session as FxASession
+from fxa.crypto import quick_stretch_password
 
 # This is a proof of concept, in python, to get some data of some collections.
 # The data stays encrypted and because we don't have the keys to decrypt it
@@ -17,6 +19,12 @@ from fxa.core import Client as FxAClient
 
 TOKENSERVER_URL = os.getenv("TOKENSERVER_URL", "https://token.services.mozilla.com/")
 FXA_SERVER_URL = os.getenv("FXA_SERVER_URL", "https://api.accounts.firefox.com")
+
+FXA_USER_AGENT_DEFAULT = 'Mozilla/5.0 (Mobile; Firefox Accounts; rv:1.0) {}/{}'.format(
+    'Firefox Sync client', '0.9.0.dev0')
+
+FXA_USER_AGENT = os.getenv("FXA_USER_AGENT", FXA_USER_AGENT_DEFAULT)
+FXA_SESSION_FILE = os.getenv("FXA_SESSION_FILE", os.path.expanduser("~") + "/.pyfxa_session.json")
 
 try:
     import http.client as http_client
@@ -45,7 +53,36 @@ def get_browserid_assertion(login, password, fxa_server_url=FXA_SERVER_URL,
     """
     ensure_trace()
     client = FxAClient(server_url=fxa_server_url)
-    session = client.login(login, password, keys=True)
+    session_data = {}
+    update_session = False
+    if os.path.exists(FXA_SESSION_FILE):
+        try:
+            with open(FXA_SESSION_FILE, 'r') as fp:
+                session_data = json.load(fp, encoding="utf-8")
+        except ValueError:
+            update_session = True
+            pass
+
+    s_uid = session_data.get("uid")
+    s_token = session_data.get("token")
+    s_keys = session_data.get("keys")
+    s_assertion_keypair = session_data.get("assertion_keypair")
+
+    keyA, keyB = (None, None)
+
+    if s_uid and s_token and s_keys:
+        stretched_pw = quick_stretch_password(login, password)
+        session = FxASession(client, login, stretched_pw, s_uid, s_token)
+        session.keys = (unhexlify(s_keys[0]), unhexlify(s_keys[1]))
+        keyA, keyB = session.keys
+        session.check_session_status()
+        session.get_email_status()
+    else:
+        session = client.login(login, password, keys=True)
+        session_data["uid"] = session.uid
+        session_data["token"] = session.token
+        update_session = True
+
     if not session.verified:
         if session.verificationMethod == 'totp-2fa':
             # ask for the verification code
@@ -56,11 +93,28 @@ def get_browserid_assertion(login, password, fxa_server_url=FXA_SERVER_URL,
             raise SyncClientError("Login verification method not supported: %s"
                                   % (session.verificationMethod))
 
-    bid_assertion = session.get_identity_assertion(tokenserver_url)
-    _, keyB = session.fetch_keys()
-    if isinstance(keyB, six.text_type):  # pragma: no cover
-        keyB = keyB.encode('utf-8')
+    bid_assertion = session.get_identity_assertion(tokenserver_url,
+                                                   keypair=s_assertion_keypair)
+    if keyA is None or keyB is None:
+        keyA, keyB = session.fetch_keys()
+        if isinstance(keyA, six.text_type):  # pragma: no cover
+            keyA = keyA.encode('utf-8')
+        if isinstance(keyB, six.text_type):  # pragma: no cover
+            keyB = keyB.encode('utf-8')
+        session_data["keys"] = (hexlify(keyA), hexlify(keyB))
+        update_session = True
+
+    if update_session:
+        with open(FXA_SESSION_FILE, 'w') as fp:
+            json.dump(session_data, fp, encoding="utf-8")
+
     return bid_assertion, hexlify(sha256(keyB).digest()[0:16])
+
+def ensure_session(session=None):
+    if session is None:
+        session = requests.Session()
+        session.headers['User-Agent'] = FXA_USER_AGENT
+    return session
 
 
 class SyncClientError(Exception):
@@ -71,12 +125,13 @@ class TokenserverClient(object):
     """Client for the Firefox Sync Token Server.
     """
     def __init__(self, bid_assertion, client_state,
-                 server_url=TOKENSERVER_URL, verify=None):
+                 server_url=TOKENSERVER_URL, verify=None, session=None):
         ensure_trace()
         self.bid_assertion = bid_assertion
         self.client_state = client_state
         self.server_url = server_url
         self.verify = verify
+        self._session = ensure_session(session)
 
     def get_hawk_credentials(self, duration=None):
         """Asks for new temporary token given a BrowserID assertion"""
@@ -91,8 +146,8 @@ class TokenserverClient(object):
             params['duration'] = int(duration)
 
         url = self.server_url.rstrip('/') + '/1.0/sync/1.5'
-        raw_resp = requests.get(url, headers=headers, params=params,
-                                verify=self.verify)
+        raw_resp = self._session.get(url, headers=headers, params=params,
+                                     verify=self.verify)
         raw_resp.raise_for_status()
         return raw_resp.json()
 
@@ -102,7 +157,8 @@ class SyncClient(object):
     """
 
     def __init__(self, bid_assertion=None, client_state=None,
-                 tokenserver_url=TOKENSERVER_URL, verify=None, **credentials):
+                 tokenserver_url=TOKENSERVER_URL, verify=None, session=None,
+                 **credentials):
 
         ensure_trace()
 
@@ -129,6 +185,7 @@ class SyncClient(object):
                              id=credentials['id'],
                              key=credentials['key'])
         self.verify = verify
+        self._session = ensure_session(session)
 
     def _request(self, method, url, **kwargs):
         """Utility to request an endpoint with the correct authentication
@@ -137,7 +194,7 @@ class SyncClient(object):
         """
         url = self.api_endpoint.rstrip('/') + '/' + url.lstrip('/')
         kwargs.setdefault('verify', self.verify)
-        self.raw_resp = requests.request(method, url, auth=self.auth, **kwargs)
+        self.raw_resp = self._session.request(method, url, auth=self.auth, **kwargs)
         self.raw_resp.raise_for_status()
 
         if self.raw_resp.status_code == 304:
