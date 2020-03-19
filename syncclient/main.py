@@ -1,7 +1,6 @@
 import argparse
 import os
 from client import SyncClient, get_browserid_assertion
-from pprint import pprint
 
 
 def main():
@@ -31,7 +30,7 @@ def main():
     client = SyncClient(*bid_assertion_args)
     resp = getattr(client, args.action)(*extra)
     if not args.quiet:
-        pprint(resp)
+        print(resp)
 
 
 if __name__ == '__main__':

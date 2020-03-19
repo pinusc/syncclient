@@ -147,7 +147,7 @@ class SyncClient(object):
                 self.raw_resp.url)
             raise requests.exceptions.HTTPError(http_error_msg,
                                                 response=self.raw_resp)
-        return self.raw_resp.json()
+        return self.raw_resp.text
 
     def info_collections(self, **kwargs):
         """
