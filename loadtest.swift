@@ -62,7 +62,7 @@ func pythonPutRecord(counter: Int = 1, user: String = user, collection: String =
 }
 
 for i in 0..<100_000 {
-    let collection = "c-" + String(i)
+    let collection = "c-" + String(i) // Changing this, please only ascii, no spaces
     for j in 200_000..<200_010 { // 10 records each greater than 200K
         autoreleasepool {
             pythonPutRecord(counter: j, user: user, collection: collection)
