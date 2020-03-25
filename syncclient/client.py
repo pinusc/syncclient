@@ -7,6 +7,8 @@ import os
 
 import requests
 import logging
+import base64
+import tempfile
 from requests_hawk import HawkAuth
 from fxa.core import Client as FxAClient
 from fxa.core import Session as FxASession
@@ -18,8 +20,8 @@ from getpass import getpass
 # it just stays like that for now. The goal is simply to prove that it's
 # possible to get the data out of the API"""
 
-TOKENSERVER_URL = os.getenv("TOKENSERVER_URL", "https://token.services.mozilla.com/")
-FXA_SERVER_URL = os.getenv("FXA_SERVER_URL", "https://api.accounts.firefox.com")
+FXA_CONF_HOST = os.getenv("FXA_CONF_HOST", "accounts.firefox.com")
+FXA_CONF_URI = "https://{}/.well-known/fxa-client-configuration".format(FXA_CONF_HOST)
 
 FXA_CLIENT_NAME = 'Firefox Sync client'
 FXA_CLIENT_VERSION = '0.9.0.dev0'
@@ -41,6 +43,19 @@ def timing():
 
 def ensure_trace():
     http_client.HTTPConnection.debuglevel = int(os.getenv("HTTP_TRACE", "0"))
+
+FXA_CONFIG = {}
+
+def auto_configure(config_key, env_key):
+    global FXA_CONFIG
+    if FXA_CONFIG.get(config_key) is None:
+        FXA_CONFIG = requests.get(FXA_CONF_URI).json()
+
+    value = FXA_CONFIG.get(config_key)
+    return os.getenv(env_key, value)
+
+TOKENSERVER_URL = auto_configure("sync_tokenserver_base_url", "TOKENSERVER_URL")
+FXA_SERVER_URL = auto_configure("auth_server_base_url", "FXA_SERVER_URL")
 
 def encode_header(value):
     if isinstance(value, str):
@@ -412,6 +427,27 @@ class SyncClient(object):
         return self._request('put', '/storage/%s/%s' % (
             collection.lower(), record_id), data=json.dumps(record),
             headers=headers, **kwargs)
+
+    def put_file(self, collection, record_id, file_name, **kwargs):
+        record = {
+            'id': record_id
+        }
+
+        payload = None
+        with open(file_name, "rb") as fp:
+            payload = base64.b64encode(fp.read())
+
+        payload = '{"payload":"' + str(payload, encoding='utf-8') + '"}'
+
+        headers = {}
+        if 'headers' in kwargs:
+            headers = kwargs.pop('headers')
+
+        headers['Content-Type'] = 'application/json; charset=utf-8'
+
+        url = '/storage/{}/{}'.format(collection.lower(), record_id)
+        return self._request('put', url, data=payload, headers=headers,
+                                **kwargs)
 
     def post_records(self, collection, records, **kwargs):
         """
