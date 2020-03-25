@@ -22,3 +22,6 @@
 
 Unfortunately `Process().run()` doesn't close ports so script leaks memory while running. But it should survive overnight.
 
+If you are interested, you could run from time to time `python3 syncclient/main.py --user valeriy.van@enote.com get_collection_counts | python3 -m json.tool` in separate terminal session to see how new collections are being created.
+
+
