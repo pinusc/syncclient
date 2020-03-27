@@ -14,6 +14,7 @@ from fxa.core import Client as FxAClient
 from fxa.core import Session as FxASession
 from fxa.errors import ClientError as FxAClientError
 from getpass import getpass
+from datetime import datetime
 
 # This is a proof of concept, in python, to get some data of some collections.
 # The data stays encrypted and because we don't have the keys to decrypt it
@@ -184,7 +185,10 @@ def ensure_session(session=None):
 def log_req_timing(resp, method, url):
     if timing():
         perf = resp.elapsed.total_seconds()
-        print('[request-time] {:10.6f} {} {}'.format(perf, method.upper(), url), file=sys.stderr)
+        print('{} [request-time] {:10.6f} {} {}'.format(
+            datetime.utcnow().isoformat(timespec='milliseconds'), perf,
+            method.upper(), url),
+        file=sys.stderr)
 
 
 class SyncClientError(Exception):
@@ -269,7 +273,7 @@ class SyncClient(object):
         kwargs.setdefault('verify', self.verify)
         self.raw_resp = self._session.request(method, url, auth=self.auth, **kwargs)
 
-        log_req_timing(self.raw_resp, method, url)
+        log_req_timing(self.raw_resp, method, self.raw_resp.request.url)
 
         self.raw_resp.raise_for_status()
 
@@ -324,7 +328,7 @@ class SyncClient(object):
         """Deletes all records for the user."""
         return self._request('delete', '/', **kwargs)
 
-    def get_records(self, collection, full=True, ids=None, newer=None,
+    def get_records(self, collection, full=False, ids=None, newer=None,
                     limit=None, offset=None, sort=None, **kwargs):
         """
         Returns a list of the BSOs contained in a collection. For example:
@@ -378,6 +382,12 @@ class SyncClient(object):
 
         return self._request('get', '/storage/%s' % collection.lower(),
                              params=params, **kwargs)
+
+    def delete_collection(self, collection, **kwargs):
+        """Deletes a complete collection
+        """
+        return self._request('delete', '/storage/%s' % (collection.lower()),
+                             **kwargs)
 
     def get_record(self, collection, record_id, **kwargs):
         """Returns the BSO in the collection corresponding to the requested id.
