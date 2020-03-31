@@ -3,6 +3,7 @@ import os
 import requests
 import time
 import sys
+import json
 from client import SyncClient, get_fxa_session, get_browserid_assertion
 from datetime import datetime
 
@@ -55,8 +56,15 @@ def main():
     fxa_session = get_fxa_session(args.login)
     bid_assertion_args = get_browserid_assertion(fxa_session)
     client = SyncClient(*bid_assertion_args)
-    bso_id_prefix = extra[1] if args.action in ["put_file", "put_record"] else None
 
+    bso_id_prefix = None
+    bso = None
+    if args.action == "put_record":
+        bso = json.loads(extra[1])
+        bso_id_prefix = bso.pop("id")
+    elif args.action in ["put_file"]:
+        bso_id_prefix = extra[1]
+    
     # retry configuration...
     sleep_factor = 1.25
     sleep_start = float(1.0)
@@ -68,7 +76,11 @@ def main():
             time.sleep(args.delay)
 
         if bso_id_prefix:
-            extra[1] = '{}_{:06d}'.format(bso_id_prefix, i)
+            bso_id = '{}_{:06d}'.format(bso_id_prefix, i)
+            if bso is None:
+                extra[1] = bso_id
+            else:
+                bso["id"] = bso_id
         resp = None
 
         # retry with back-off...
@@ -76,6 +88,8 @@ def main():
         num = 0
         while resp is None and num < max_retries:
             try:
+                if bso is not None:
+                    extra[1] = bso
                 resp = getattr(client, args.action)(*extra, **kwargs)
                 break
             except requests.exceptions.HTTPError as e:
