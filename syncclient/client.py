@@ -103,21 +103,47 @@ def get_input(message):
         return input(message)
     return raw_input(message)
 
+def read_session_cache():
+    session_data = None
+
+    if os.path.exists(FXA_SESSION_FILE):
+        try:
+            with open(FXA_SESSION_FILE, 'r') as fp:
+                session_data = json.load(fp)
+        except ValueError:
+            pass
+
+    return session_data
+
+def write_session_cache(session_data):
+    if session_data.get("uid") is None:
+        raise ValueError("Refuse to store session without 'uid'")
+
+    if session_data.get("token") is None:
+        raise ValueError("Refuse to store session without 'token'")
+
+    # don't directly serialize to file - might break JSON syntax
+    session_json = json.dumps(session_data)
+    with open(FXA_SESSION_FILE, 'w') as fp:
+        fp.write(session_json)
+
+def update_session_cache(key, value=None):
+    session_data = read_session_cache()
+
+    if session_data is not None:
+        session_data[key] = value
+        write_session_cache(session_data)
+
 def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
     client = FxAClient(server_url=fxa_server_url)
 
     # replace session object to allow hooks...
     client.apiclient._session = ensure_session()
 
-    session_data = {}
-    update_session = False
-    if os.path.exists(FXA_SESSION_FILE):
-        try:
-            with open(FXA_SESSION_FILE, 'r') as fp:
-                session_data = json.load(fp)
-        except ValueError:
-            update_session = True
-            pass
+    session_data = read_session_cache()
+    update_session = session_data is None
+    if session_data is None:
+        session_data = {}
 
     s_uid = session_data.get("uid")
     s_token = session_data.get("token")
@@ -141,7 +167,7 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
             session_data["token"] = fxa_session.token
             update_session = True
 
-        fxa_session.get_email_status()
+        email_status = fxa_session.get_email_status()
     else:
         # ask for the password - never stored...
         password = getpass("Please enter your password ({}): ".format(email))
@@ -172,10 +198,7 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
         update_session = True
 
     if update_session:
-        # don't directly serialize to file - might break JSON syntax
-        session_json = json.dumps(session_data)
-        with open(FXA_SESSION_FILE, 'w') as fp:
-            fp.write(session_json)
+        write_session_cache(session_data)
 
     fxa_ensure_devicename(fxa_session, '{} {} (Python {}.{})'.format(
         FXA_CLIENT_NAME, FXA_CLIENT_VERSION, sys.version_info.major,
@@ -184,6 +207,27 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
     fxa_session._config = kwargs
 
     return fxa_session
+
+def create_oauth_client(fxa_session, client_id):
+    oauth_client = OAuthClient(client_id, None, server_url=OAUTH_SERVER_URL)
+    oauth_client.apiclient._session = fxa_session.apiclient._session
+    return oauth_client
+
+def create_oauth_tokens(fxa_session, oauth_client, client_id, oauth_scopes,
+                        with_refresh=False):
+    # ...use the code-challenge method to avoid requiring user interaction...
+    challenge = verifier = {}
+    (challenge, verifier) = oauth_client.generate_pkce_challenge()
+
+    access_type = 'offline' if with_refresh else 'online'
+
+    code = authorize_code_with_session(fxa_session, oauth_scopes, client_id,
+                                       access_type=access_type, **challenge)
+
+    # trade the code for a token...
+    token_data = oauth_client.trade_code(code, client_id, **verifier)
+
+    return (token_data.get('access_token'), token_data.get('refresh_token'))
 
 def get_sync_access_token(fxa_session, client_id, oauth_client=None):
     http_session = fxa_session.apiclient._session
@@ -194,21 +238,16 @@ def get_sync_access_token(fxa_session, client_id, oauth_client=None):
     ]
 
     if oauth_client is None:
-        oauth_client = OAuthClient(client_id, None,
-                                   server_url=OAUTH_SERVER_URL)
-        oauth_client.apiclient._session = http_session
+        oauth_client = create_oauth_client(fxa_session, client_id)
 
-    # ...use the code-challenge method to avoid requiring user interaction...
-    challenge = verifier = {}
-    (challenge, verifier) = oauth_client.generate_pkce_challenge()
+    (access, refresh) = create_oauth_tokens(fxa_session, oauth_client,
+                                            client_id, oauth_scopes,
+                                            with_refresh=True)
 
-    code = authorize_code_with_session(fxa_session, oauth_scopes, client_id,
-                                       **challenge)
+    if refresh is not None:
+        update_session_cache('refreshTokenId', refresh)
 
-    # trade the code for a token...
-    token_data = oauth_client.trade_code(code, client_id, **verifier)
-
-    return (token_data['access_token'], oauth_client)
+    return (access, oauth_client)
 
 def get_sync_client(fxa_session, client_id, oauth_client=None,
                     access_token=None):
@@ -259,13 +298,14 @@ def get_sync_client(fxa_session, client_id, oauth_client=None,
 
 def authorize_code_with_session(fxa_session, scopes, client_id, service=None,
                                 keys_jwe=None, code_challenge=None,
-                                code_challenge_method=None):
+                                code_challenge_method=None,
+                                access_type='offline'):
     # this is used to determine whether the provided redirect is authentic
     state = os.urandom(23).hex()
     body = {
         "client_id": client_id,
         "state": state,
-        "access_type": "online",
+        "access_type": access_type,
         "scope": ' '.join(scopes)
     }
 
@@ -291,11 +331,11 @@ def authorize_code_with_session(fxa_session, scopes, client_id, service=None,
     if "state" not in query_params:
         error_msg = "state missing in OAuth response"
         raise OutOfProtocolError(error_msg)
-        
+
     if state != query_params["state"][0]:
         error_msg = "state mismatch in OAuth response"
         raise OutOfProtocolError(error_msg)
-        
+
     try:
         return query_params["code"][0]
     except (KeyError, IndexError, ValueError):

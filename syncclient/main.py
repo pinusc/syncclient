@@ -30,7 +30,7 @@ def main():
                         help='Firefox Accounts login (email address).')
 
     # data retrieval options...
-    parser.add_argument('--full', dest='decrypt', action='store_true',
+    parser.add_argument('--full', dest='full', action='store_true',
                         help='get_records: fetch full BSO records instead of only ID')
     parser.add_argument('--ids', dest='ids', nargs='+', default=None,
                         help='get_records: filter records by ID')
