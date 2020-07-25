@@ -3,6 +3,7 @@ cryptography==2.8
 hawkauthlib==2.0.0
 idna==2.9
 ipaddress==1.0.23
+jwcrypto==0.7
 mohawk==1.1.0
 pyasn1==0.4.8
 PyBrowserID==0.14.0
