@@ -452,9 +452,16 @@ class SyncClient(object):
         self._master_keys = keys
 
         if keys is not None:
-            crypto_keys = self.get_record('crypto', 'keys', decrypt=False)
-            crypto_keys = self._decrypt_bso(crypto_keys, keys)
-            self._crypto_keys = json.loads(crypto_keys['payload'])
+            try:
+                crypto_keys = self.get_record('crypto', 'keys', decrypt=False)
+                crypto_keys = self._decrypt_bso(crypto_keys, keys)
+                self._crypto_keys = json.loads(crypto_keys['payload'])
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    # no crypto keys available, yet...
+                    pass
+                else:
+                    raise e
 
     def _request(self, method, url, **kwargs):
         """Utility to request an endpoint with the correct authentication
