@@ -299,11 +299,11 @@ def get_sync_client(fxa_session, client_id, oauth_client=None,
     )
 
 def fxa_ensure_devicename(fxa_session, name):
-    devices = fxa_session.apiclient.get("/account/attached_clients", auth=fxa_session._auth)
+    devices = fxa_session.apiclient.get("/account/devices", auth=fxa_session._auth)
     my_device = None
 
     for fxa_device in devices:
-        if fxa_device['isCurrentSession']:
+        if fxa_device['isCurrentDevice']:
             my_device = fxa_device
 
     if my_device is None:
@@ -314,7 +314,7 @@ def fxa_ensure_devicename(fxa_session, name):
     else:
         # always update the entry
         device_data = {
-            'id': my_device['deviceId'],
+            'id': my_device['id'],
             'name': name
         }
         fxa_session.apiclient.post("/account/device", device_data, auth=fxa_session._auth)
