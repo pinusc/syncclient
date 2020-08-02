@@ -215,17 +215,19 @@ def create_oauth_client(fxa_session, client_id):
 
 def create_oauth_tokens(fxa_session, oauth_client, client_id, oauth_scopes,
                         with_refresh=False):
-    # ...use the code-challenge method to avoid requiring user interaction...
-    challenge = verifier = {}
-    (challenge, verifier) = oauth_client.generate_pkce_challenge()
-
+    # ...trade an FxA session directly for an OAuth token...
     access_type = 'offline' if with_refresh else 'online'
 
-    code = authorize_code_with_session(fxa_session, oauth_scopes, client_id,
-                                       access_type=access_type, **challenge)
-
-    # trade the code for a token...
-    token_data = oauth_client.trade_code(code, client_id, **verifier)
+    body = {
+        'client_id': client_id,
+        'grant_type': 'fxa-credentials',
+        'scope': ' '.join(oauth_scopes),
+        'access_type': access_type,
+        'ttl': 300
+    }
+    token_data = fxa_session.apiclient.post("/oauth/token",
+                                            body,
+                                            auth=fxa_session._auth)
 
     return (token_data.get('access_token'), token_data.get('refresh_token'))
 
@@ -242,7 +244,7 @@ def get_sync_access_token(fxa_session, client_id, oauth_client=None):
 
     (access, refresh) = create_oauth_tokens(fxa_session, oauth_client,
                                             client_id, oauth_scopes,
-                                            with_refresh=True)
+                                            with_refresh=False)
 
     if refresh is not None:
         update_session_cache('refreshTokenId', refresh)
@@ -296,58 +298,12 @@ def get_sync_client(fxa_session, client_id, oauth_client=None,
         access_token
     )
 
-def authorize_code_with_session(fxa_session, scopes, client_id, service=None,
-                                keys_jwe=None, code_challenge=None,
-                                code_challenge_method=None,
-                                access_type='offline'):
-    # this is used to determine whether the provided redirect is authentic
-    state = os.urandom(23).hex()
-    body = {
-        "client_id": client_id,
-        "state": state,
-        "access_type": access_type,
-        "scope": ' '.join(scopes)
-    }
-
-    if code_challenge is not None:
-        body["code_challenge"] = code_challenge
-        body["code_challenge_method"] = code_challenge_method or "S256"
-
-    if keys_jwe is not None:
-        body["keys_jwe"] = browserid.utils.encode_bytes(keys_jwe)
-
-    resp = fxa_session.apiclient.post("/oauth/authorization", body,
-                                      auth=fxa_session._auth)
-
-    if "redirect" not in resp:
-        error_msg = "redirect missing in OAuth response"
-        raise OutOfProtocolError(error_msg)
-
-    # This flow is designed for web-based redirects.
-    # In order to get the code we must parse it from the redirect url.
-    query_params = parse_qs(urlparse(resp["redirect"]).query)
-
-    # make sure the redirect URL is authentic
-    if "state" not in query_params:
-        error_msg = "state missing in OAuth response"
-        raise OutOfProtocolError(error_msg)
-
-    if state != query_params["state"][0]:
-        error_msg = "state mismatch in OAuth response"
-        raise OutOfProtocolError(error_msg)
-
-    try:
-        return query_params["code"][0]
-    except (KeyError, IndexError, ValueError):
-        error_msg = "code missing in OAuth redirect url"
-        raise OutOfProtocolError(error_msg)
-
 def fxa_ensure_devicename(fxa_session, name):
-    devices = fxa_session.apiclient.get("/account/devices", auth=fxa_session._auth)
+    devices = fxa_session.apiclient.get("/account/attached_clients", auth=fxa_session._auth)
     my_device = None
 
     for fxa_device in devices:
-        if fxa_device['isCurrentDevice']:
+        if fxa_device['isCurrentSession']:
             my_device = fxa_device
 
     if my_device is None:
@@ -355,9 +311,10 @@ def fxa_ensure_devicename(fxa_session, name):
             'name': name
         }
         fxa_session.apiclient.post("/account/device", device_data, auth=fxa_session._auth)
-    elif my_device['name'] != name:
+    else:
+        # always update the entry
         device_data = {
-            'id': my_device['id'],
+            'id': my_device['deviceId'],
             'name': name
         }
         fxa_session.apiclient.post("/account/device", device_data, auth=fxa_session._auth)
