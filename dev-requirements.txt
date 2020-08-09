@@ -1,5 +1,7 @@
+flake8
+mock
 pytest
 pytest-cache
 pytest-cover
 pytest-sugar
-mock
+tox

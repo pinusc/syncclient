@@ -1,11 +1,11 @@
 import argparse
-import os
 import client
 import json
 from fxa.errors import ClientError
 
+
 class OAuthClient(object):
-    
+
     def __init__(self, oauth_client, client_id, fxa_session):
         self._client = oauth_client
         self._client_id = client_id
@@ -18,7 +18,7 @@ class OAuthClient(object):
         token, _ = client.create_oauth_tokens(self._fxa_session, self._client,
                                               self._client_id, scopes,
                                               with_refresh=False)
-        return {'token':token}
+        return {'token': token}
 
     def delete(self, token):
         self._client.destroy_token(token)
@@ -34,6 +34,7 @@ class OAuthClient(object):
         }
         return self._client.apiclient.post(url, body)
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="""CLI to manage OAuth tokens""",
@@ -44,9 +45,12 @@ def main():
     parser.add_argument('-t', '--trace', dest='trace', action='store_true',
                         help='Enable tracing of requests')
     parser.add_argument('-T', '--timing', dest='timing', action='store_true',
-                        help='Enable printing elapsed time of API requests to stderr')
-    parser.add_argument('-d', '--dump', dest='dump_response', action='store_true',
-                        help='Enable dumping of response data (requires --timing or --trace)')
+                        help='Enable printing elapsed time of API requests'
+                        ' to stderr')
+    parser.add_argument('-d', '--dump', dest='dump_response',
+                        action='store_true',
+                        help='Enable dumping of response data'
+                        ' (requires --timing or --trace)')
 
     # API interaction options...
     parser.add_argument('-c', '--client-id', dest='client_id', required=True,
@@ -89,6 +93,7 @@ def main():
             print(data)
     except ClientError as e:
         print(json.dumps(e.details))
+
 
 if __name__ == '__main__':
     main()
