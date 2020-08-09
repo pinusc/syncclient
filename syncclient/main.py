@@ -1,7 +1,8 @@
 import argparse
 import os
 import client
-
+import hashlib
+import requests
 
 def main():
     parser = argparse.ArgumentParser(
@@ -29,6 +30,9 @@ def main():
     parser.add_argument('-u', '--user', dest='login',
                         help='Firefox Accounts login (email address).')
 
+    parser.add_argument('--token-ttl', dest='token_ttl', type=int, default=300,
+                        help='The validity of the OAuth token in seconds')
+
     # data retrieval options...
     parser.add_argument('--full', dest='full', action='store_true',
                         help='get_records: fetch full BSO records instead of only ID')
@@ -49,7 +53,7 @@ def main():
     parser.add_argument(dest='action', help='The action to be executed',
                         default='info_collections', nargs='?',
                         choices=[m for m in dir(client.SyncClient)
-                                 if not m.startswith('_')])
+                                 if not m.startswith('_')] + ['put_files'])
 
     args, extra = parser.parse_known_args()
 
@@ -83,18 +87,36 @@ def main():
     # create or verify a FxA session for this machine...
     fxa_session = client.get_fxa_session(args.login)
 
+    # get an OAuth access token...
+    (access_token, _) = client.create_oauth_token(fxa_session, args.client_id,
+                                                  token_ttl=args.token_ttl,
+                                                  with_refresh=False)
+
     # create an authorized sync client...
-    sync_client, oauth_client, access_token = client.get_sync_client(
-        fxa_session, args.client_id)
+    sync_client = client.get_sync_client(fxa_session, args.client_id,
+                                         access_token,
+                                         token_ttl=args.token_ttl,
+                                         auto_renew=True)
 
     # execute the desired action...
     try:
-        data = getattr(sync_client, args.action)(*extra, **params)
-        if not args.quiet:
-            print(data)
+        if args.action == 'put_files':
+            for f in extra[1:]:
+                rec_id = hashlib.sha1(bytes(f, 'utf-8')).hexdigest()
+                try:
+                    data = sync_client.put_file(extra[0], rec_id, f)
+                    if not args.quiet:
+                        print('Uploaded file "{}" => id "{}": {}'.format(f, rec_id, data))
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code != 400:
+                        raise e
+                    print('File too large: {}'.format(f))
+        else:
+            data = getattr(sync_client, args.action)(*extra, **params)
+            if not args.quiet:
+                print(data)
     finally:
-        if oauth_client is not None:
-            oauth_client.destroy_token(access_token)
+        client.destroy_oauth_token(fxa_session, args.client_id, access_token)
 
 if __name__ == '__main__':
     main()

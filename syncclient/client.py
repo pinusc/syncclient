@@ -1,32 +1,22 @@
-from hashlib import sha256
+import base64
 from binascii import hexlify, unhexlify
+from datetime import datetime
+from getpass import getpass, getuser
+from hashlib import sha256
+import http.client as http_client
 import json
-import six
-import sys
+import logging
 import os
+import platform
+from socket import gethostname
+import sys
+import tempfile
 import time
 
-import requests
-import logging
-import base64
-import tempfile
-from requests_hawk import HawkAuth
-from fxa.core import Client as FxAClient
-from fxa.core import Session as FxASession
-import fxa.crypto as fxa_crypto
-from fxa.errors import ClientError as FxAClientError
-from fxa.errors import OutOfProtocolError
-from fxa.oauth import Client as OAuthClient
-from getpass import getpass
-from datetime import datetime
-from six.moves.urllib.parse import urlparse, urlunparse, urlencode, parse_qs
 import browserid
 import browserid.jwt
 import browserid.utils
 import browserid.verifiers.local
-import jwcrypto.jwk
-import jwcrypto.jwe
-import jwcrypto.common
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.backends.openssl import backend
 from cryptography.hazmat.primitives import hashes, hmac, padding
@@ -34,6 +24,19 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric import dsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from fxa.core import Client as FxAClient
+from fxa.core import Session as FxASession
+import fxa.crypto as fxa_crypto
+from fxa.errors import ClientError as FxAClientError
+from fxa.errors import OutOfProtocolError
+from fxa.oauth import Client as OAuthClient
+import jwcrypto.jwk
+import jwcrypto.jwe
+import jwcrypto.common
+import requests
+from requests_hawk import HawkAuth
+import six
+from six.moves.urllib.parse import urlparse, urlunparse, urlencode, parse_qs
 
 # This is a proof of concept, in python, to get some data of some collections.
 # The data stays encrypted and because we don't have the keys to decrypt it
@@ -43,21 +46,20 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 FXA_CONF_HOST = os.getenv("FXA_CONF_HOST", "accounts.firefox.com")
 FXA_CONF_URI = "https://{}/.well-known/fxa-client-configuration".format(FXA_CONF_HOST)
 
-FXA_CLIENT_NAME = 'Firefox Sync client'
-FXA_CLIENT_VERSION = '0.9.0.dev0'
-FXA_USER_AGENT_DEFAULT = 'Mozilla/5.0 (Mobile; Firefox Accounts; rv:1.0) {}/{}'.format(
-    FXA_CLIENT_NAME, FXA_CLIENT_VERSION)
+FXA_CLIENT_NAME = 'Python Sync Client'
+FXA_CLIENT_VERSION_MAJOR = '0.9'
+FXA_CLIENT_VERSION = FXA_CLIENT_VERSION_MAJOR + '.0.dev0'
+FXA_USER_AGENT_DEFAULT = 'Mozilla/5.0 ({} {}; rv:{}) Gecko/20100101 {}/{}'.format(
+    platform.system(),
+    platform.machine(),
+    FXA_CLIENT_VERSION,
+    FXA_CLIENT_NAME,
+    FXA_CLIENT_VERSION_MAJOR)
 
 FXA_USER_AGENT = os.getenv("FXA_USER_AGENT", FXA_USER_AGENT_DEFAULT)
 FXA_SESSION_FILE = os.getenv("FXA_SESSION_FILE", os.path.expanduser("~") + "/.pyfxa_session.json")
 
 SYNC_SCOPE = os.getenv('FXA_SCOPE_SYNC', 'https://identity.mozilla.com/apps/oldsync')
-
-try:
-    import http.client as http_client
-except ImportError:
-    # Python 2
-    import httplib as http_client
 
 HTTP_TRACE = False
 HTTP_TIMING = False
@@ -66,6 +68,10 @@ HTTP_DUMP_RESPONSE = False
 def enable_http_timing():
     global HTTP_TIMING
     HTTP_TIMING = True
+
+def disable_http_timing():
+    global HTTP_TIMING
+    HTTP_TIMING = False
 
 def enable_http_dump_response():
     global HTTP_DUMP_RESPONSE
@@ -76,10 +82,33 @@ def enable_http_trace():
 
 FXA_CONFIG = {}
 
+def log_req_timing(resp, method, url):
+    if HTTP_TIMING:
+        perf = resp.elapsed.total_seconds()
+        print('{} [request-time] {:10.6f} {} {}'.format(
+            datetime.utcnow().isoformat(timespec='milliseconds'), perf,
+            method.upper(), url),
+        file=sys.stderr)
+
+    if HTTP_DUMP_RESPONSE:
+        print('=== CONTENT BEGIN ===', file=sys.stderr)
+        print(resp.text, file=sys.stderr)
+        print('=== CONTENT END ===', file=sys.stderr)
+
+def hook_response(resp, *args, **kwargs):
+    log_req_timing(resp, resp.request.method, resp.url)
+
+def ensure_session(session=None):
+    if session is None:
+        session = requests.Session()
+        session.headers['User-Agent'] = FXA_USER_AGENT
+        session.hooks['response'].append(hook_response)
+    return session
+
 def auto_configure(config_key, env_key):
     global FXA_CONFIG
     if FXA_CONFIG.get(config_key) is None:
-        FXA_CONFIG = requests.get(FXA_CONF_URI).json()
+        FXA_CONFIG = ensure_session().get(FXA_CONF_URI).json()
 
     value = FXA_CONFIG.get(config_key)
     return os.getenv(env_key, value)
@@ -183,7 +212,9 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
             if not fxa_session.totp_verify(v_code):
                 raise SyncClientError("Wrong TOTP token")
         elif fxa_session.verificationMethod == 'email':
-            raise SyncClientError("This device is not accepted, yet. Please check your mails and confirm this sign-in.")
+            v_link = get_input("Please paste the sign-in confirmation link here: ")
+            v_code = extract_signin_code(fxa_session, v_link)
+            fxa_session.verify_email_code(v_code)
         else:
             raise SyncClientError("Login verification method not supported: %s"
                                   % (fxa_session.verificationMethod))
@@ -200,21 +231,35 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
     if update_session:
         write_session_cache(session_data)
 
-    fxa_ensure_devicename(fxa_session, '{} {} (Python {}.{})'.format(
-        FXA_CLIENT_NAME, FXA_CLIENT_VERSION, sys.version_info.major,
-        sys.version_info.minor))
+    client_name = '{}\'s {} {} @ {}'.format(getuser(),
+                                            FXA_CLIENT_NAME,
+                                            FXA_CLIENT_VERSION_MAJOR,
+                                            gethostname())
+    fxa_ensure_devicename(fxa_session, client_name)
 
     fxa_session._config = kwargs
 
     return fxa_session
 
-def create_oauth_client(fxa_session, client_id):
-    oauth_client = OAuthClient(client_id, None, server_url=OAUTH_SERVER_URL)
-    oauth_client.apiclient._session = fxa_session.apiclient._session
-    return oauth_client
+def extract_signin_code(fxa_session, v_link):
+    query_params = parse_qs(urlparse(v_link).query)
+    if 'code' not in query_params or 'uid' not in query_params:
+        # must be a (tracking) redirect
+        r = fxa_session.apiclient._session.get(v_link, allow_redirects=False)
+        v_link = r.headers['location']
+        query_params = parse_qs(urlparse(v_link).query)
 
-def create_oauth_tokens(fxa_session, oauth_client, client_id, oauth_scopes,
-                        with_refresh=False):
+    return query_params['code'][0]
+
+def create_oauth_token(fxa_session, client_id, token_ttl=60,
+                       with_refresh=False):
+    http_session = fxa_session.apiclient._session
+
+    oauth_scopes = [
+        'profile',
+        SYNC_SCOPE
+    ]
+
     # ...trade an FxA session directly for an OAuth token...
     access_type = 'offline' if with_refresh else 'online'
 
@@ -223,42 +268,28 @@ def create_oauth_tokens(fxa_session, oauth_client, client_id, oauth_scopes,
         'grant_type': 'fxa-credentials',
         'scope': ' '.join(oauth_scopes),
         'access_type': access_type,
-        'ttl': 300
+        'ttl': token_ttl
     }
     token_data = fxa_session.apiclient.post("/oauth/token",
                                             body,
                                             auth=fxa_session._auth)
 
+    if token_data.get('refresh_token') is not None:
+        update_session_cache('refreshTokenId', token_data.get('refresh_token'))
+
     return (token_data.get('access_token'), token_data.get('refresh_token'))
 
-def get_sync_access_token(fxa_session, client_id, oauth_client=None):
+def destroy_oauth_token(fxa_session, client_id, token, with_refresh=False):
+    body = {
+        'client_id': client_id,
+        'token': token,
+        'token_type_hint': ('refresh_token' if with_refresh else 'access_token')
+    }
+    fxa_session.apiclient.post("/oauth/destroy", body)
+
+def get_sync_client(fxa_session, client_id, access_token, token_ttl=45,
+                    auto_renew=False):
     http_session = fxa_session.apiclient._session
-
-    oauth_scopes = [
-        'profile',
-        SYNC_SCOPE
-    ]
-
-    if oauth_client is None:
-        oauth_client = create_oauth_client(fxa_session, client_id)
-
-    (access, refresh) = create_oauth_tokens(fxa_session, oauth_client,
-                                            client_id, oauth_scopes,
-                                            with_refresh=False)
-
-    if refresh is not None:
-        update_session_cache('refreshTokenId', refresh)
-
-    return (access, oauth_client)
-
-def get_sync_client(fxa_session, client_id, oauth_client=None,
-                    access_token=None):
-    http_session = fxa_session.apiclient._session
-
-    if access_token is None:
-        access_token, oauth_client = get_sync_access_token(fxa_session,
-                                                           client_id,
-                                                           oauth_client)
 
     # Fetch scoped-key-data to get the key generation...
     data = {'client_id': client_id, 'scope': SYNC_SCOPE}
@@ -279,7 +310,6 @@ def get_sync_client(fxa_session, client_id, oauth_client=None,
     sync_master_key = kdf.derive(fxa_session.keys[1])
 
     # prepare X-KeyID header (generation + hash for keyB)
-    #generation = int(round(time.time() * 1000))
     key_hash = browserid.utils.encode_bytes(sha256(fxa_session.keys[1])
                                             .digest()[0:16])
     key_id = '{}-{}'.format(generation, key_hash)
@@ -291,12 +321,9 @@ def get_sync_client(fxa_session, client_id, oauth_client=None,
                                      session=http_session)
 
     # create sync client...
-    return (
-        SyncClient(ts_client=token_client, keys=sync_master_keys,
-                   session=http_session),
-        oauth_client,
-        access_token
-    )
+    return SyncClient(token_client, keys=sync_master_keys,
+                      session=http_session, sync_ttl=token_ttl,
+                      auto_renew=auto_renew)
 
 def fxa_ensure_devicename(fxa_session, name):
     devices = fxa_session.apiclient.get("/account/devices", auth=fxa_session._auth)
@@ -318,29 +345,6 @@ def fxa_ensure_devicename(fxa_session, name):
             'name': name
         }
         fxa_session.apiclient.post("/account/device", device_data, auth=fxa_session._auth)
-
-def log_req_timing(resp, method, url):
-    if HTTP_TIMING:
-        perf = resp.elapsed.total_seconds()
-        print('{} [request-time] {:10.6f} {} {}'.format(
-            datetime.utcnow().isoformat(timespec='milliseconds'), perf,
-            method.upper(), url),
-        file=sys.stderr)
-
-    if HTTP_DUMP_RESPONSE:
-        print('=== CONTENT BEGIN ===', file=sys.stderr)
-        print(resp.text, file=sys.stderr)
-        print('=== CONTENT END ===', file=sys.stderr)
-
-def hook_response(resp, *args, **kwargs):
-    log_req_timing(resp, resp.request.method, resp.url)
-
-def ensure_session(session=None):
-    if session is None:
-        session = requests.Session()
-        session.headers['User-Agent'] = FXA_USER_AGENT
-        session.hooks['response'].append(hook_response)
-    return session
 
 class SyncClientError(Exception):
     """An error occured in SyncClient."""
@@ -381,29 +385,15 @@ class SyncClient(object):
     """Client for the Firefox Sync server.
     """
 
-    def __init__(self, ts_client=None, keys=None, verify=None, session=None,
-                 **credentials):
+    def __init__(self, ts_client, keys=None, verify=None, session=None,
+                 sync_ttl=300, auto_renew=False):
 
-        if ts_client is not None:
-            credentials = ts_client.get_hawk_credentials()
+        self._token_client = ts_client
+        self._sync_ttl = sync_ttl
 
-        else:
-            # Make sure if the user wants to use credentials that they
-            # give all the needed information.
-            credentials_complete = set(credentials.keys()).issuperset({
-                'uid', 'api_endpoint', 'hashalg', 'id', 'key'})
+        self.new_session()
+        self._auto_renew = auto_renew
 
-            if not credentials_complete:
-                raise SyncClientError(
-                    "You should either provide a TokenserverClient instance "
-                    "or complete Sync Storage credentials (uid, api_endpoint, "
-                    "hashalg, id, key)")
-
-        self.user_id = credentials['uid']
-        self.api_endpoint = credentials['api_endpoint']
-        self.auth = HawkAuth(algorithm=credentials['hashalg'],
-                             id=credentials['id'],
-                             key=credentials['key'])
         self.verify = verify
         self._session = ensure_session(session)
         self._master_keys = keys
@@ -420,6 +410,20 @@ class SyncClient(object):
                 else:
                     raise e
 
+    def new_session(self, sync_ttl=None):
+        if sync_ttl is None:
+            sync_ttl = self._sync_ttl
+
+        credentials = self._token_client.get_hawk_credentials(sync_ttl)
+        
+        self.user_id = credentials['uid']
+        self.api_endpoint = credentials['api_endpoint']
+        self.auth = HawkAuth(algorithm=credentials['hashalg'],
+                             id=credentials['id'],
+                             key=credentials['key'])
+
+        return credentials
+
     def _request(self, method, url, **kwargs):
         """Utility to request an endpoint with the correct authentication
         setup, raises on errors and returns the JSON.
@@ -427,18 +431,24 @@ class SyncClient(object):
         """
         url = self.api_endpoint.rstrip('/') + '/' + url.lstrip('/')
         kwargs.setdefault('verify', self.verify)
-        self.raw_resp = self._session.request(method, url, auth=self.auth, **kwargs)
+        
+        resp = self._session.request(method, url, auth=self.auth, **kwargs)
 
-        self.raw_resp.raise_for_status()
+        if resp.status_code == 401 and self._auto_renew:
+            self.new_session()
+            resp = self._session.request(method, url, auth=self.auth, **kwargs)
 
-        if self.raw_resp.status_code == 304:
+        self.raw_resp = resp
+        resp.raise_for_status()
+
+        if resp.status_code == 304:
             http_error_msg = '%s Client Error: %s for url: %s' % (
-                self.raw_resp.status_code,
-                self.raw_resp.reason,
-                self.raw_resp.url)
+                resp.status_code,
+                resp.reason,
+                resp.url)
             raise requests.exceptions.HTTPError(http_error_msg,
-                                                response=self.raw_resp)
-        return self.raw_resp.text
+                                                response=resp)
+        return resp.text
 
     def _decrypt_aead_sync(self, ciphertext, iv, encryption_key):
         """Utility to decrypt an encrypted BSO record.
@@ -622,7 +632,7 @@ class SyncClient(object):
 
     def get_records(self, collection, full=False, ids=None, newer=None,
                     limit=None, offset=None, sort=None, decrypt=False,
-                    **kwargs):
+                    ignore_response=False, **kwargs):
         """
         Returns a list of the BSOs contained in a collection. For example:
 
@@ -665,7 +675,7 @@ class SyncClient(object):
         """
         params = kwargs.pop('params', {})
         if full:
-            params['full'] = True
+            params['full'] = 1
         if ids is not None:
             params['ids'] = ','.join(map(str, ids))
         if newer is not None:
@@ -678,7 +688,9 @@ class SyncClient(object):
             params['sort'] = sort
 
         data = self._request('get', '/storage/%s' % collection.lower(),
-                             params=params, **kwargs)
+                            params=params, **kwargs)
+        if ignore_response:
+            return None
 
         if self._is_encrypted_bso(data) and decrypt:
             # special case for crypto collection ...
