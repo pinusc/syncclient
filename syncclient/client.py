@@ -263,19 +263,14 @@ def extract_signin_code(fxa_session, v_link):
 
 
 def create_oauth_token(fxa_session, client_id, token_ttl=60,
-                       with_refresh=False):
-    oauth_scopes = [
-        'profile',
-        SYNC_SCOPE
-    ]
-
+                       with_refresh=False, scopes=['profile', SYNC_SCOPE]):
     # ...trade an FxA session directly for an OAuth token...
     access_type = 'offline' if with_refresh else 'online'
 
     body = {
         'client_id': client_id,
         'grant_type': 'fxa-credentials',
-        'scope': ' '.join(oauth_scopes),
+        'scope': ' '.join(scopes),
         'access_type': access_type,
         'ttl': token_ttl
     }
@@ -846,7 +841,7 @@ class SyncClient(object):
             'payload': str(payload, encoding='utf-8')
         }
 
-    def post_files(self, collection, *args, **kwargs):
+    def post_files(self, collection, quiet=False, *args, **kwargs):
         max_items = 1000
         max_size = 2000000
 

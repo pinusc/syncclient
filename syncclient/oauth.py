@@ -2,6 +2,7 @@ import argparse
 import client
 import json
 from fxa.errors import ClientError
+from fxa.oauth import Client
 
 
 class OAuthClient(object):
@@ -15,9 +16,10 @@ class OAuthClient(object):
         if isinstance(scopes, str):
             scopes = scopes.split(',')
 
-        token, _ = client.create_oauth_tokens(self._fxa_session, self._client,
-                                              self._client_id, scopes,
-                                              with_refresh=False)
+        token, _ = client.create_oauth_token(self._fxa_session,
+                                             self._client_id,
+                                             scopes=scopes,
+                                             with_refresh=False)
         return {'token': token}
 
     def delete(self, token):
@@ -79,7 +81,9 @@ def main():
     fxa_session = client.get_fxa_session(args.login)
 
     # create an OAuth client...
-    oauth_client = client.create_oauth_client(fxa_session, args.client_id)
+    oauth_client = Client(args.client_id, None,
+                          server_url=client.OAUTH_SERVER_URL)
+    oauth_client.apiclient._session = fxa_session.apiclient._session
 
     wrapper = OAuthClient(oauth_client, args.client_id, fxa_session)
 
