@@ -6,9 +6,11 @@ import http.client as http_client
 import json
 import os
 import platform
+import re
 from socket import gethostname
 import sys
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 import browserid
 import browserid.jwt
@@ -21,7 +23,9 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from fxa.core import Client as FxAClient
 from fxa.core import Session as FxASession
+from fxa.crypto import derive_key
 from fxa.errors import ClientError as FxAClientError
+from fxa import _utils as fxa_utils
 import requests
 from requests_hawk import HawkAuth
 import six
@@ -34,6 +38,7 @@ import six
 FXA_CONF_HOST = os.getenv("FXA_CONF_HOST", "accounts.firefox.com")
 FXA_CONF_URI = "https://{}/.well-known/fxa-client-configuration".format(
     FXA_CONF_HOST)
+FXA_SIGNIN_URI = "https://{}/signin".format(FXA_CONF_HOST)
 
 FXA_CLIENT_NAME = 'Python Sync Client'
 FXA_CLIENT_VERSION_MAJOR = '0.9'
@@ -47,6 +52,8 @@ FXA_USER_AGENT_DEFAULT = ('Mozilla/5.0 ({} {}; rv:{})'
                               FXA_CLIENT_VERSION_MAJOR)
 
 FXA_USER_AGENT = os.getenv("FXA_USER_AGENT", FXA_USER_AGENT_DEFAULT)
+fxa_utils.USER_AGENT_HEADER = FXA_USER_AGENT
+
 FXA_SESSION_FILE = os.getenv("FXA_SESSION_FILE", os.path.expanduser("~")
                              + "/.pyfxa_session.json")
 
@@ -56,6 +63,49 @@ SYNC_SCOPE = os.getenv('FXA_SCOPE_SYNC',
 HTTP_TRACE = False
 HTTP_TIMING = False
 HTTP_DUMP_RESPONSE = False
+
+
+class CustomFxAClient(FxAClient):
+
+    def __init__(self, server_url=None):
+        super(CustomFxAClient, self).__init__(server_url)
+        
+    def login(self, email, password=None, stretchpwd=None, keys=False,
+              unblock_code=None, verification_method=None, reason="signin",
+              **kwargs):
+        stretchpwd = self._get_stretched_password(email, password, stretchpwd)
+        body = {
+            "email": email,
+            "authPW": derive_key(stretchpwd, "authPW").hex(),
+            "reason": reason,
+        }
+
+        url = "/account/login"
+        if keys:
+            url += "?keys=true"
+
+        if unblock_code:
+            body["unblockCode"] = unblock_code
+        if verification_method:
+            body["verificationMethod"] = verification_method
+
+        # merge the final payload...
+        body = {**kwargs, **body}
+
+        resp = self.apiclient.post(url, body)
+        # XXX TODO: somehow sanity-check the schema on this endpoint
+        return FxASession(
+            client=self,
+            email=email,
+            stretchpwd=stretchpwd,
+            uid=resp["uid"],
+            token=resp["sessionToken"],
+            key_fetch_token=resp.get("keyFetchToken"),
+            verified=resp["verified"],
+            verificationMethod=resp.get("verificationMethod"),
+            auth_timestamp=resp["authAt"],
+        )
+    
 
 
 def enable_http_timing():
@@ -170,7 +220,7 @@ def update_session_cache(key, value=None):
 
 
 def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
-    client = FxAClient(server_url=fxa_server_url)
+    client = CustomFxAClient(server_url=fxa_server_url)
 
     # replace session object to allow hooks...
     client.apiclient._session = ensure_session()
@@ -183,6 +233,7 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
     s_uid = session_data.get("uid")
     s_token = session_data.get("token")
     s_keys = session_data.get("keys")
+    s_device_id = session_data.get("device_id")
 
     keyA, keyB = (None, None)
 
@@ -194,24 +245,34 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
         try:
             fxa_session.check_session_status()
         except FxAClientError:
+            metrics_ctx = get_metrics_context(client, device_id=s_device_id)
+
             # ask for the password - never stored...
             password = getpass("Authorization expired - please enter your"
                                " password ({}): ".format(email))
-            fxa_session = client.login(email, password)
+            fxa_session = client.login(email, password,
+                                       metricsContext=metrics_ctx)
             fxa_session.keys = (bytes.fromhex(s_keys[0]),
                                 bytes.fromhex(s_keys[1]))
             session_data["uid"] = fxa_session.uid
             session_data["token"] = fxa_session.token
+            session_data["device_id"] = metrics_ctx["deviceId"]
             update_session = True
 
         _ = fxa_session.get_email_status()
     else:
+        metrics_ctx = get_metrics_context(client, device_id=s_device_id)
+
         # ask for the password - never stored...
         password = getpass("Please enter your password ({}): ".format(email))
-        fxa_session = client.login(email, password, keys=True)
+        fxa_session = client.login(email, password, keys=True,
+                                   metricsContext=metrics_ctx)
         session_data["uid"] = fxa_session.uid
         session_data["token"] = fxa_session.token
+        session_data["device_id"] = metrics_ctx["deviceId"]
         update_session = True
+
+    fetch_keys = keyA is None or keyB is None
 
     if not fxa_session.verified:
         if fxa_session.verificationMethod == 'totp-2fa':
@@ -228,7 +289,7 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
             raise SyncClientError("Login verification method not supported: %s"
                                   % (fxa_session.verificationMethod))
 
-    if keyA is None or keyB is None:
+    if fetch_keys:
         keyA, keyB = fxa_session.fetch_keys()
         if isinstance(keyA, six.text_type):  # pragma: no cover
             keyA = keyA.encode('utf-8')
@@ -240,15 +301,44 @@ def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
     if update_session:
         write_session_cache(session_data)
 
-    client_name = '{}\'s {} {} @ {}'.format(getuser(),
-                                            FXA_CLIENT_NAME,
-                                            FXA_CLIENT_VERSION_MAJOR,
-                                            gethostname())
+    client_name = 'CLI Session, {} {}'.format(FXA_CLIENT_NAME,
+                                              FXA_CLIENT_VERSION_MAJOR)
     fxa_ensure_devicename(fxa_session, client_name)
 
     fxa_session._config = kwargs
 
     return fxa_session
+
+
+def get_metrics_context(client, device_id=None):
+    flow_id = None
+    flow_begin = None
+    headers = {
+        'Accept-Language': 'en-US',
+        'DNT': '1'
+    }
+    resp = client.apiclient._session.get(FXA_SIGNIN_URI, headers=headers)
+    resp.raise_for_status()
+    matched = re.search(r'data-flow-id=([a-f0-9]{64})', resp.text)
+    if matched is not None:
+        flow_id = matched.group(1)
+    if flow_id is None:
+        return {};
+
+    matched = re.search(r'data-flow-begin=([0-9]+)', resp.text)
+    if matched is not None:
+        flow_begin = matched.group(1)
+    if flow_begin is None:
+        return {};
+
+    if device_id is None:
+        device_id = uuid4().hex
+
+    return {
+        'deviceId': device_id,
+        'flowId': flow_id,
+        'flowBeginTime': int(flow_begin)
+    }
 
 
 def extract_signin_code(fxa_session, v_link):
