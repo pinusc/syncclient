@@ -69,7 +69,7 @@ class CustomFxAClient(FxAClient):
 
     def __init__(self, server_url=None):
         super(CustomFxAClient, self).__init__(server_url)
-        
+
     def login(self, email, password=None, stretchpwd=None, keys=False,
               unblock_code=None, verification_method=None, reason="signin",
               **kwargs):
@@ -92,7 +92,24 @@ class CustomFxAClient(FxAClient):
         # merge the final payload...
         body = {**kwargs, **body}
 
-        resp = self.apiclient.post(url, body)
+        try:
+            resp = self.apiclient.post(url, body)
+        except FxAClientError as e:
+            if e.code == 400:
+                if e.errno == 120:
+                    # handle changed primary email...
+                    ext = {
+                        'originalLoginEmail': email
+                    }
+                    email = e.details.get('email')
+                    return self.login(email, password=password,
+                                      stretchpwd=None, keys=keys,
+                                      unblock_code=unblock_code,
+                                      verification_method=verification_method,
+                                      reason=reason,
+                                      **ext)
+            raise e
+
         # XXX TODO: somehow sanity-check the schema on this endpoint
         return FxASession(
             client=self,
@@ -105,7 +122,6 @@ class CustomFxAClient(FxAClient):
             verificationMethod=resp.get("verificationMethod"),
             auth_timestamp=resp["authAt"],
         )
-    
 
 
 def enable_http_timing():
