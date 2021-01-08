@@ -398,7 +398,7 @@ def destroy_oauth_token(fxa_session, client_id, token, with_refresh=False):
 
 
 def get_sync_client(fxa_session, client_id, access_token, token_ttl=45,
-                    auto_renew=False):
+                    auto_renew=False, token_server_url=None):
     http_session = fxa_session.apiclient._session
 
     # Fetch scoped-key-data to get the key generation...
@@ -427,8 +427,10 @@ def get_sync_client(fxa_session, client_id, access_token, token_ttl=45,
     sync_master_keys = [sync_master_key[:32], sync_master_key[32:]]
 
     # get sync token...
-    token_client = TokenserverClient(oauth_token=access_token, key_id=key_id,
-                                     session=http_session)
+    token_client = TokenserverClient(
+        oauth_token=access_token, key_id=key_id, session=http_session,
+        server_url=token_server_url
+        )
 
     # create sync client...
     return SyncClient(token_client, keys=sync_master_keys,
