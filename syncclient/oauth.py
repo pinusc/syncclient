@@ -7,10 +7,11 @@ from fxa.oauth import Client
 
 class OAuthClient(object):
 
-    def __init__(self, oauth_client, client_id, fxa_session):
+    def __init__(self, oauth_client, client_id, fxa_session, token_ttl=300):
         self._client = oauth_client
         self._client_id = client_id
         self._fxa_session = fxa_session
+        self._token_ttl = token_ttl
 
     def create(self, scopes=['profile']):
         if isinstance(scopes, str):
@@ -18,6 +19,7 @@ class OAuthClient(object):
 
         token, _ = client.create_oauth_token(self._fxa_session,
                                              self._client_id,
+                                             token_ttl=self._token_ttl,
                                              scopes=scopes,
                                              with_refresh=False)
         return {'token': token}
@@ -55,6 +57,8 @@ def main():
                         ' (requires --timing or --trace)')
 
     # API interaction options...
+    parser.add_argument('--ttl', dest='token_ttl', default=300, type=int,
+                        help='The TTL of generated tokens (in seconds).')
     parser.add_argument('-c', '--client-id', dest='client_id', required=True,
                         help='The client_id to use for OAuth (mandatory).')
     parser.add_argument('-u', '--user', dest='login', required=True,
