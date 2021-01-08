@@ -1,13 +1,12 @@
 import base64
 from datetime import datetime
-from getpass import getpass, getuser
+from getpass import getpass
 from hashlib import sha1, sha256
 import http.client as http_client
 import json
 import os
 import platform
 import re
-from socket import gethostname
 import sys
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
@@ -180,12 +179,6 @@ def auto_configure(config_key, env_key):
     return os.getenv(env_key, value)
 
 
-TOKENSERVER_URL = auto_configure("sync_tokenserver_base_url",
-                                 "TOKENSERVER_URL")
-FXA_SERVER_URL = auto_configure("auth_server_base_url", "FXA_SERVER_URL")
-OAUTH_SERVER_URL = auto_configure("oauth_server_base_url", "OAUTH_SERVER_URL")
-
-
 def encode_header(value):
     if isinstance(value, str):
         return value
@@ -235,7 +228,11 @@ def update_session_cache(key, value=None):
         write_session_cache(session_data)
 
 
-def get_fxa_session(email, fxa_server_url=FXA_SERVER_URL, **kwargs):
+def get_fxa_session(email, fxa_server_url=None, **kwargs):
+    if fxa_server_url is None:
+        fxa_server_url = auto_configure(
+            "auth_server_base_url", "FXA_SERVER_URL"
+            )
     client = CustomFxAClient(server_url=fxa_server_url)
 
     # replace session object to allow hooks...
@@ -339,13 +336,13 @@ def get_metrics_context(client, device_id=None):
     if matched is not None:
         flow_id = matched.group(1)
     if flow_id is None:
-        return {};
+        return {}
 
     matched = re.search(r'data-flow-begin=([0-9]+)', resp.text)
     if matched is not None:
         flow_begin = matched.group(1)
     if flow_begin is None:
-        return {};
+        return {}
 
     if device_id is None:
         device_id = uuid4().hex
@@ -471,11 +468,13 @@ class SyncClientError(Exception):
 class TokenserverClient(object):
     """Client for the Firefox Sync Token Server.
     """
-    def __init__(self, oauth_token, key_id, server_url=TOKENSERVER_URL,
+    def __init__(self, oauth_token, key_id, server_url=None,
                  verify=None, session=None):
         self.oauth_token = oauth_token
         self.key_id = key_id
-        self.server_url = server_url
+        self.server_url = server_url or auto_configure(
+            "sync_tokenserver_base_url", "TOKENSERVER_URL"
+            )
         self.verify = verify
         self._session = ensure_session(session)
 
@@ -968,16 +967,12 @@ class SyncClient(object):
         last_modified = self.raw_resp.headers["X-Last-Modified"]
         headers['X-If-Unmodified-Since'] = last_modified
 
-        count = 0
-        total_size = 0
-
         url = '/storage/{}?batch={}'.format(collection.lower(), batch_id)
         batch = []
         batch_size = 2
         for f in args:
             bso = self._read_file_as_bso(f)
             bso_size = len(bytes(json.dumps(bso), 'utf-8'))
-            total_size += len(bso['payload'])
 
             if len(batch) >= max_items or (batch_size + bso_size) >= max_size:
                 # upload a batch and reset internals...
