@@ -582,8 +582,8 @@ class SyncClient(object):
         backend = default_backend()
 
         # sync (still) uses AES-CBC-256
-        aead_sync = Cipher(algorithms.AES(encryption_key), modes.CBC(iv),
-                           backend=backend)
+        aes = algorithms.AES(encryption_key)
+        aead_sync = Cipher(aes, modes.CBC(iv), backend=backend)
 
         # decrypt...
         decryptor = aead_sync.decryptor()
@@ -592,7 +592,7 @@ class SyncClient(object):
         decryptor.finalize()
 
         # remove AES padding...
-        unpadder = padding.PKCS7(64).unpadder()
+        unpadder = padding.PKCS7(aes.block_size).unpadder()
         cleartext = unpadder.update(cleartext)
         return (cleartext + unpadder.finalize()).decode('utf-8')
 
@@ -816,19 +816,24 @@ class SyncClient(object):
         if sort is not None and sort in ('newest', 'index', 'oldest'):
             params['sort'] = sort
 
+        parse = kwargs.pop('parse_data', False)
+
         data = self._request('get', '/storage/%s' % collection.lower(),
                              params=params, **kwargs)
-        if ignore_response:
+        if ignore_response or not data:
             return None
 
-        if self._is_encrypted_bso(data) and decrypt:
+        if parse:
+            data = json.loads(data)
+
+        if decrypt and self._is_encrypted_bso(data):
             # special case for crypto collection ...
             if collection.lower() == 'crypto':
                 data = self._decrypt_bso(data, keys=self._master_keys)
             else:
                 data = self._decrypt_bso(data)
 
-        if isinstance(data, dict) or isinstance(data, list):
+        if not parse and not isinstance(data, str):
             data = json.dumps(data)
 
         return data
