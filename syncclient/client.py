@@ -518,19 +518,12 @@ class SyncClient(object):
         self._master_keys = keys
 
         if keys is not None:
-            try:
-                crypto_keys = self.get_record(
-                    'crypto', 'keys', decrypt=False, ignore_errors=[404]
-                    )
-                if crypto_keys:
-                    crypto_keys = self._decrypt_bso(crypto_keys, keys)
-                    self._crypto_keys = json.loads(crypto_keys['payload'])
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 404:
-                    # no crypto keys available, yet...
-                    pass
-                else:
-                    raise e
+            crypto_keys = self.get_record(
+                'crypto', 'keys', decrypt=False, ignore_errors=[404]
+                )
+            if crypto_keys:
+                crypto_keys = self._decrypt_bso(crypto_keys, keys)
+                self._crypto_keys = json.loads(crypto_keys['payload'])
 
     def new_session(self, sync_ttl=None):
         if sync_ttl is None:
