@@ -519,9 +519,12 @@ class SyncClient(object):
 
         if keys is not None:
             try:
-                crypto_keys = self.get_record('crypto', 'keys', decrypt=False)
-                crypto_keys = self._decrypt_bso(crypto_keys, keys)
-                self._crypto_keys = json.loads(crypto_keys['payload'])
+                crypto_keys = self.get_record(
+                    'crypto', 'keys', decrypt=False, ignore_errors=[404]
+                    )
+                if crypto_keys:
+                    crypto_keys = self._decrypt_bso(crypto_keys, keys)
+                    self._crypto_keys = json.loads(crypto_keys['payload'])
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 404:
                     # no crypto keys available, yet...
@@ -549,25 +552,35 @@ class SyncClient(object):
         setup, raises on errors and returns the JSON.
 
         """
-        url = self.api_endpoint.rstrip('/') + '/' + url.lstrip('/')
+        full_url = self.api_endpoint.rstrip('/') + '/' + url.lstrip('/')
         kwargs.setdefault('verify', self.verify)
 
-        resp = self._session.request(method, url, auth=self.auth, **kwargs)
+        ignore_errors = kwargs.pop('ignore_errors', [])
+        resp = self._session.request(method, full_url, auth=self.auth,
+                                     **kwargs)
 
-        if resp.status_code == 401 and self._auto_renew:
+        status = resp.status_code
+        if status == 401 and self._auto_renew:
             self.new_session()
-            resp = self._session.request(method, url, auth=self.auth, **kwargs)
+            kwargs['ignore_errors'] = ignore_errors
+            resp = self._request(method, url, **kwargs)
 
         self.raw_resp = resp
-        resp.raise_for_status()
 
-        if resp.status_code == 304:
-            http_error_msg = '%s Client Error: %s for url: %s' % (
-                resp.status_code,
-                resp.reason,
-                resp.url)
-            raise requests.exceptions.HTTPError(http_error_msg,
-                                                response=resp)
+        if status >= 300:
+            if status not in ignore_errors:
+                resp.raise_for_status()
+
+                if status == 304:
+                    http_error_msg = '%s Client Error: %s for url: %s' % (
+                        status, resp.reason, resp.url
+                        )
+                    raise requests.exceptions.HTTPError(
+                        http_error_msg, response=resp
+                        )
+            else:
+                return None
+
         return resp.text
 
     def _decrypt_aead_sync(self, ciphertext, iv, encryption_key):
