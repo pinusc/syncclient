@@ -556,7 +556,7 @@ class SyncClient(object):
         if status == 401 and self._auto_renew:
             self.new_session()
             kwargs['ignore_errors'] = ignore_errors
-            resp = self._request(method, url, **kwargs)
+            return self._request(method, url, **kwargs)
 
         self.raw_resp = resp
 
