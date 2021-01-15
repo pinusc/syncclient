@@ -5,6 +5,7 @@ from hashlib import sha1, sha256
 import http.client as http_client
 import json
 import os
+from pathlib import Path
 import platform
 import re
 import sys
