@@ -961,9 +961,10 @@ class SyncClient(object):
             'payload': str(payload, encoding='utf-8')
         }
 
-    def post_files(self, collection, quiet=False, *args, **kwargs):
+    def post_files(self, collection, *args, **kwargs):
         batch_size = kwargs.pop('batch_size', 1000)
         max_size = kwargs.pop('max_batch_bytes', 2 * 2**20)
+        quiet = kwargs.pop('quiet', False)
 
         headers = kwargs.pop('headers', {})
 
