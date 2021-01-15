@@ -979,7 +979,8 @@ class SyncClient(object):
         # initialize a batch...
         url = '/storage/{}?batch=true'.format(collection.lower())
         resp = self._request('post', url, data='[]', headers=headers, **kwargs)
-        print(resp)
+        if not quiet:
+            print(resp)
 
         result = json.loads(resp)
         batch_id = result['batch']
@@ -1003,7 +1004,9 @@ class SyncClient(object):
                 headers['X-Weave-Bytes'] = str(batch_bytes)
                 resp = self._request('post', url, data=json.dumps(batch),
                                      headers=headers, **kwargs)
-                print(resp)
+                if not quiet:
+                    print(resp)
+
                 if self.raw_resp.headers["X-Last-Modified"] != last_modified:
                     raise SyncClientError('Collection was modified')
 
@@ -1022,7 +1025,9 @@ class SyncClient(object):
         headers['X-Weave-Bytes'] = str(batch_bytes)
         resp = self._request('post', url, data=json.dumps(batch),
                              headers=headers, **kwargs)
-        print(resp)
+        if not quiet:
+            print(resp)
+
         if self.raw_resp.headers["X-Last-Modified"] <= last_modified:
             raise SyncClientError('Collection was not modified')
 
