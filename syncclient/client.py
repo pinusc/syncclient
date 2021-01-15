@@ -961,15 +961,20 @@ class SyncClient(object):
         }
 
     def post_files(self, collection, quiet=False, *args, **kwargs):
-        max_items = 1000
-        max_size = 2000000
+        batch_size = kwargs.pop('batch_size', 1000)
+        max_size = kwargs.pop('max_batch_bytes', 2 * 2**20)
 
-        headers = {}
-        if 'headers' in kwargs:
-            headers = kwargs.pop('headers')
+        headers = kwargs.pop('headers', {})
 
         headers['Content-Type'] = 'application/json; charset=utf-8'
-        headers['X-Weave-Total-Records'] = str(len(args))
+
+        files = args
+        first_path = Path(files[0])
+        if len(files) == 1 and first_path.is_dir():
+            files = [str(x) for x in first_path.iterdir() if x.is_file()]
+            headers['X-Weave-Total-Records'] = str(len(files))
+        else:
+            headers['X-Weave-Total-Records'] = str(len(files))
 
         # initialize a batch...
         url = '/storage/{}?batch=true'.format(collection.lower())
@@ -983,15 +988,19 @@ class SyncClient(object):
 
         url = '/storage/{}?batch={}'.format(collection.lower(), batch_id)
         batch = []
-        batch_size = 2
-        for f in args:
+        batch_bytes = 2
+        for f in files:
             bso = self._read_file_as_bso(f)
             bso_size = len(bytes(json.dumps(bso), 'utf-8'))
 
-            if len(batch) >= max_items or (batch_size + bso_size) >= max_size:
+            if (
+                    len(batch) >= batch_size
+                    or
+                    (batch_bytes + bso_size) >= max_size
+                    ):
                 # upload a batch and reset internals...
                 headers['X-Weave-Records'] = str(len(batch))
-                headers['X-Weave-Bytes'] = str(batch_size)
+                headers['X-Weave-Bytes'] = str(batch_bytes)
                 resp = self._request('post', url, data=json.dumps(batch),
                                      headers=headers, **kwargs)
                 print(resp)
@@ -999,18 +1008,18 @@ class SyncClient(object):
                     raise SyncClientError('Collection was modified')
 
                 batch = []
-                batch_size = 2
+                batch_bytes = 2
             elif len(batch) > 0:
-                batch_size += 2
+                batch_bytes += 2
 
-            batch_size += bso_size
+            batch_bytes += bso_size
             batch.append(bso)
 
         # commit with the last batch...
         url = '/storage/{}?batch={}&commit=true'.format(collection.lower(),
                                                         batch_id)
         headers['X-Weave-Records'] = str(len(batch))
-        headers['X-Weave-Bytes'] = str(batch_size)
+        headers['X-Weave-Bytes'] = str(batch_bytes)
         resp = self._request('post', url, data=json.dumps(batch),
                              headers=headers, **kwargs)
         print(resp)
