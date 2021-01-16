@@ -60,6 +60,10 @@ FXA_SESSION_FILE = os.getenv("FXA_SESSION_FILE", os.path.expanduser("~")
 SYNC_SCOPE = os.getenv('FXA_SCOPE_SYNC',
                        'https://identity.mozilla.com/apps/oldsync')
 
+BASE64_REGEXP = re.compile(
+    r'^(?:[a-zA-Z0-9/\+]{3})*([a-zA-Z0-9/\+]{2}=|[a-zA-Z0-9/\+]==)?$'
+    )
+
 HTTP_TRACE = False
 HTTP_TIMING = False
 HTTP_DUMP_RESPONSE = False
@@ -952,14 +956,28 @@ class SyncClient(object):
         return None
 
     def _read_file_as_bso(self, file_name):
-        payload = None
-        with open(file_name, "rb") as fp:
-            payload = base64.b64encode(fp.read())
+        bso = None
+        with open(file_name, 'rb') as fp:
+            try:
+                bso = json.load(fp)
+                if not isinstance(bso, dict) or 'payload' not in bso:
+                    bso = None
+                elif not BASE64_REGEXP.fullmatch(bso['payload']):
+                    bso['payload'] = base64.b64encode(
+                        bso['payload'].encode('utf-8')
+                        ).decode('utf-8')
+            except Exception:
+                pass
+            if bso is None:
+                fp.seek(0, 0)
+                bso = {
+                    'payload': base64.b64encode(fp.read()).decode('utf-8')
+                }
 
-        return {
-            'id': sha1(bytes(file_name, 'utf-8')).hexdigest(),
-            'payload': str(payload, encoding='utf-8')
-        }
+        if 'id' not in bso:
+            bso['id'] = sha1(file_name.encode('utf-8')).hexdigest()
+
+        return bso
 
     def post_files(self, collection, *args, **kwargs):
         batch_size = kwargs.pop('batch_size', 1000)
