@@ -405,7 +405,7 @@ def destroy_oauth_token(fxa_session, client_id, token, with_refresh=False):
 
 def get_sync_client(
         fxa_session, client_id, access_token, token_ttl=45, auto_renew=False,
-        token_server_url=None, http_session=None
+        token_server_url=None, http_session=None, init_crypto=True
         ):
     if not http_session:
         http_session = fxa_session.apiclient._session
@@ -423,17 +423,20 @@ def get_sync_client(
     # }
     generation = scoped_key_data['keyRotationTimestamp']
 
-    kdf = HKDF(algorithm=hashes.SHA256(), length=64, salt=None,
-               info=b'identity.mozilla.com/picl/v1/oldsync',
-               backend=backend)
-    sync_master_key = kdf.derive(fxa_session.keys[1])
-
     # prepare X-KeyID header (generation + hash for keyB)
-    key_hash = browserid.utils.encode_bytes(sha256(fxa_session.keys[1])
-                                            .digest()[0:16])
+    key_hash = browserid.utils.encode_bytes(
+        sha256(fxa_session.keys[1]).digest()[0:16]
+        )
     key_id = '{}-{}'.format(generation, key_hash)
 
-    sync_master_keys = [sync_master_key[:32], sync_master_key[32:]]
+    if init_crypto:
+        kdf = HKDF(algorithm=hashes.SHA256(), length=64, salt=None,
+                   info=b'identity.mozilla.com/picl/v1/oldsync',
+                   backend=backend)
+        sync_key_material = kdf.derive(fxa_session.keys[1])
+        sync_master_keys = [sync_key_material[:32], sync_key_material[32:]]
+    else:
+        sync_master_keys = None
 
     # get sync token...
     token_client = TokenserverClient(
