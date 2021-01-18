@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from getpass import getpass
 from hashlib import sha1, sha256
 import http.client as http_client
@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import re
 import sys
+import time
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -502,7 +503,10 @@ class TokenserverClient(object):
                                      verify=self.verify)
 
         raw_resp.raise_for_status()
-        return raw_resp.json()
+        data = raw_resp.json()
+        data['auth_at'] = raw_resp.headers.get('X-Timestamp', time.time())
+        data.setdefault('duration', duration)
+        return data
 
 
 class SyncClient(object):
@@ -510,17 +514,19 @@ class SyncClient(object):
     """
 
     def __init__(self, ts_client, keys=None, verify=None, session=None,
-                 sync_ttl=300, auto_renew=False):
+                 sync_ttl=300, auto_renew=False, skew_secs=5):
 
         self._token_client = ts_client
         self._sync_ttl = sync_ttl
 
-        self.new_session()
         self._auto_renew = auto_renew
+        self._skew_secs = skew_secs
 
         self.verify = verify
         self._session = ensure_session(session)
         self._master_keys = keys
+
+        self.new_session()
 
         if keys is not None:
             crypto_keys = self.get_record(
@@ -534,6 +540,7 @@ class SyncClient(object):
         if sync_ttl is None:
             sync_ttl = self._sync_ttl
 
+        now = time.time()
         credentials = self._token_client.get_hawk_credentials(sync_ttl)
 
         self.user_id = credentials['uid']
@@ -543,6 +550,16 @@ class SyncClient(object):
                              key=credentials['key'],
                              always_hash_content=False)
 
+        self._auth_at = float(credentials['auth_at'])
+        self._expires_at = self._auth_at + int(credentials['duration'])
+
+        # verify client time
+        if self._auth_at > (now + self._skew_secs):
+            raise SyncClientError(
+                'Client clock skew too high: %s (%s seconds allowed)',
+                str(timedelta(seconds=(self._auth_at - now))), self._skew_secs
+                )
+
         return credentials
 
     def _request(self, method, url, **kwargs):
@@ -550,6 +567,10 @@ class SyncClient(object):
         setup, raises on errors and returns the JSON.
 
         """
+        now_skewed = time.time() + self._skew_secs
+        if self._auto_renew and self._expires_at < now_skewed:
+            self.new_session()
+
         full_url = self.api_endpoint.rstrip('/') + '/' + url.lstrip('/')
         kwargs.setdefault('verify', self.verify)
 
