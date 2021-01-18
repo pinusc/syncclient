@@ -403,9 +403,12 @@ def destroy_oauth_token(fxa_session, client_id, token, with_refresh=False):
     fxa_session.apiclient.post("/oauth/destroy", body)
 
 
-def get_sync_client(fxa_session, client_id, access_token, token_ttl=45,
-                    auto_renew=False, token_server_url=None):
-    http_session = fxa_session.apiclient._session
+def get_sync_client(
+        fxa_session, client_id, access_token, token_ttl=45, auto_renew=False,
+        token_server_url=None, http_session=None
+        ):
+    if not http_session:
+        http_session = fxa_session.apiclient._session
 
     # Fetch scoped-key-data to get the key generation...
     data = {'client_id': client_id, 'scope': SYNC_SCOPE}
