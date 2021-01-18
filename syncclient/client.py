@@ -1073,7 +1073,7 @@ class SyncClient(object):
         if (
                 resp
                 and
-                self.raw_resp.status == 200
+                self.raw_resp.status_code == 200
                 and
                 'X-Last-Modified' in self.raw_resp.headers
                 and
