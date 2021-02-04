@@ -85,8 +85,10 @@ def main():
     fxa_session = client.get_fxa_session(args.login)
 
     # create an OAuth client...
-    oauth_client = Client(args.client_id, None,
-                          server_url=client.OAUTH_SERVER_URL)
+    oauth_server = client.auto_configure(
+        "oauth_server_base_url", "FXA_OAUTH_SERVER_URL"
+        )
+    oauth_client = Client(args.client_id, None, server_url=oauth_server)
     oauth_client.apiclient._session = fxa_session.apiclient._session
 
     wrapper = OAuthClient(oauth_client, args.client_id, fxa_session)
