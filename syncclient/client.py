@@ -942,11 +942,7 @@ class SyncClient(object):
             headers=headers, **kwargs)
 
     def put_file(self, collection, record_id, file_name, **kwargs):
-        payload = None
-        with open(file_name, "rb") as fp:
-            payload = base64.b64encode(fp.read())
-
-        payload = '{"payload":"' + str(payload, encoding='utf-8') + '"}'
+        wrap = kwargs.pop('wrap', True)
 
         headers = {}
         if 'headers' in kwargs:
@@ -955,8 +951,18 @@ class SyncClient(object):
         headers['Content-Type'] = 'application/json; charset=utf-8'
 
         url = '/storage/{}/{}'.format(collection.lower(), record_id)
-        return self._request('put', url, data=payload, headers=headers,
-                             **kwargs)
+
+        payload = None
+        with open(file_name, "rb") as fp:
+            if wrap:
+                payload = base64.b64encode(fp.read())
+                payload = '{"payload":"' + str(payload, encoding='utf-8') + '"}'
+            else:
+                payload = fp.read()
+
+        return self._request(
+            'put', url, data=payload, headers=headers, **kwargs
+            )
 
     def put_files(self, collection, *args, **kwargs):
         for f in args:
