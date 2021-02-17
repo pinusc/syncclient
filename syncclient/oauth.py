@@ -91,7 +91,9 @@ def main():
     oauth_client = Client(args.client_id, None, server_url=oauth_server)
     oauth_client.apiclient._session = fxa_session.apiclient._session
 
-    wrapper = OAuthClient(oauth_client, args.client_id, fxa_session)
+    wrapper = OAuthClient(
+        oauth_client, args.client_id, fxa_session, token_ttl=args.token_ttl
+        )
 
     # execute the desired action...
     try:
