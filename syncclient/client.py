@@ -984,6 +984,7 @@ class SyncClient(object):
 
     def _read_file_as_bso(self, file_name):
         bso = None
+        file_size = os.stat(file_name).st_size
         with open(file_name, 'rb') as fp:
             try:
                 bso = json.load(fp)
@@ -1004,12 +1005,41 @@ class SyncClient(object):
         if 'id' not in bso:
             bso['id'] = sha1(file_name.encode('utf-8')).hexdigest()
 
-        return bso
+        return bso, file_size
+
+    def _batch_upload(
+            self, collection, batch_id, commit, batch, batch_bytes, bso_parse,
+            headers, **kwargs
+            ):
+        if bso_parse:
+            data = json.dumps(batch)
+        else:
+            data = b'[' + b','.join(batch) + b']'
+            batch_bytes = len(data)
+
+        url = '/storage/{}?batch={}'.format(collection.lower(), batch_id)
+        if commit:
+            url += '&commit=true'
+
+        resp = self._request(
+            'post',
+            url,
+            data=data,
+            headers={
+                **headers,
+                'X-Weave-Records': str(len(batch)),
+                'X-Weave-Bytes': str(batch_bytes)
+            },
+            **kwargs
+            )
+
+        return resp
 
     def post_files(self, collection, *args, **kwargs):
         batch_size = kwargs.pop('batch_size', 1000)
         max_size = kwargs.pop('max_batch_bytes', 2 * 2**20)
         quiet = kwargs.pop('quiet', False)
+        bso_parse = kwargs.pop('parse', True)
 
         headers = kwargs.pop('headers', {})
 
@@ -1037,20 +1067,26 @@ class SyncClient(object):
         url = '/storage/{}?batch={}'.format(collection.lower(), batch_id)
         batch = []
         batch_bytes = 2
+        batch_records = 0
         for f in files:
-            bso = self._read_file_as_bso(f)
-            bso_size = len(bytes(json.dumps(bso), 'utf-8'))
+            if bso_parse:
+                bso, bso_size = self._read_file_as_bso(f)
+            else:
+                with open(f, 'rb') as fp:
+                    bso = fp.read()
+                bso_size = len(bso)
 
             if (
-                    len(batch) >= batch_size
+                    batch_records >= batch_size
                     or
                     (batch_bytes + bso_size) >= max_size
                     ):
                 # upload a batch and reset internals...
-                headers['X-Weave-Records'] = str(len(batch))
-                headers['X-Weave-Bytes'] = str(batch_bytes)
-                resp = self._request('post', url, data=json.dumps(batch),
-                                     headers=headers, **kwargs)
+                resp = self._batch_upload(
+                    collection, batch_id, False, batch, batch_bytes, bso_parse,
+                    headers, **kwargs
+                    )
+
                 if not quiet:
                     print(resp)
 
@@ -1059,19 +1095,21 @@ class SyncClient(object):
 
                 batch = []
                 batch_bytes = 2
-            elif len(batch) > 0:
+            elif batch_records > 0:
                 batch_bytes += 2
 
             batch_bytes += bso_size
             batch.append(bso)
+            batch_records += 1
 
         # commit with the last batch...
-        url = '/storage/{}?batch={}&commit=true'.format(collection.lower(),
-                                                        batch_id)
-        headers['X-Weave-Records'] = str(len(batch))
-        headers['X-Weave-Bytes'] = str(batch_bytes)
-        resp = self._request('post', url, data=json.dumps(batch),
-                             headers=headers, **kwargs)
+        resp = self._batch_upload(
+            collection, batch_id, True, batch, batch_bytes, bso_parse,
+            headers, **kwargs
+            )
+
+        if not quiet:
+            print(resp)
 
         if (
                 resp
