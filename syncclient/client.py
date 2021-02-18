@@ -581,6 +581,7 @@ class SyncClient(object):
         kwargs.setdefault('verify', self.verify)
 
         ignore_errors = kwargs.pop('ignore_errors', [])
+        retry_errors = kwargs.pop('retry_errors', [])
         resp = self._session.request(method, full_url, auth=self.auth,
                                      **kwargs)
 
@@ -593,7 +594,14 @@ class SyncClient(object):
         self.raw_resp = resp
 
         if status >= 300:
-            if status not in ignore_errors:
+            if status in retry_errors:
+                kwargs = {
+                    **kwargs,
+                    'ignore_errors': ignore_errors,
+                    'retry_errors': retry_errors
+                }
+                return self._request(method, url, **kwargs)
+            elif status not in ignore_errors:
                 resp.raise_for_status()
 
                 if status == 304:
@@ -956,7 +964,7 @@ class SyncClient(object):
         with open(file_name, "rb") as fp:
             if wrap:
                 payload = base64.b64encode(fp.read())
-                payload = '{"payload":"' + str(payload, encoding='utf-8') + '"}'
+                payload = b'{"payload":"' + payload + b'"}'
             else:
                 payload = fp.read()
 
