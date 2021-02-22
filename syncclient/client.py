@@ -561,9 +561,10 @@ class SyncClient(object):
 
         # verify client time
         if self._auth_at > (now + self._skew_secs):
+            local_skew = str(timedelta(seconds=(self._auth_at - now)))
             raise SyncClientError(
-                'Client clock skew too high: %s (%s seconds allowed)',
-                str(timedelta(seconds=(self._auth_at - now))), self._skew_secs
+                f'Client clock skew too high: {local_skew}'
+                f' ({self._skew_secs} seconds allowed)'
                 )
 
         return credentials
@@ -1068,8 +1069,11 @@ class SyncClient(object):
             headers['X-Weave-Total-Records'] = str(len(files))
 
         # initialize a batch...
-        url = '/storage/{}?batch=true'.format(collection.lower())
-        resp = self._request('post', url, data='[]', headers=headers, **kwargs)
+        resp = self._request(
+            'post', '/storage/{}?batch=true'.format(collection.lower()),
+            data='[]', headers=headers, **kwargs
+            )
+
         if not quiet:
             print(resp)
 
@@ -1078,7 +1082,6 @@ class SyncClient(object):
         last_modified = self.raw_resp.headers['X-Last-Modified']
         headers['X-If-Unmodified-Since'] = last_modified
 
-        url = '/storage/{}?batch={}'.format(collection.lower(), batch_id)
         batch = []
         batch_bytes = 2
         batch_records = 0
@@ -1091,7 +1094,7 @@ class SyncClient(object):
                 bso_size = len(bso)
 
             if (
-                    batch_records >= batch_size
+                    (batch_records + 1) >= batch_size
                     or
                     (batch_bytes + bso_size) >= max_size
                     ):
@@ -1109,6 +1112,7 @@ class SyncClient(object):
 
                 batch = []
                 batch_bytes = 2
+                batch_records = 0
             elif batch_records > 0:
                 batch_bytes += 2
 
