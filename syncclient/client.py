@@ -578,7 +578,8 @@ class SyncClient(object):
         if self._auto_renew and self._expires_at < now_skewed:
             self.new_session()
 
-        full_url = self.api_endpoint.rstrip('/') + '/' + url.lstrip('/')
+        full_url = ('/' + url.lstrip('/')) if url else ''
+        full_url = self.api_endpoint.rstrip('/') + full_url
         kwargs.setdefault('verify', self.verify)
 
         ignore_errors = kwargs.pop('ignore_errors', [])
@@ -798,7 +799,7 @@ class SyncClient(object):
 
     def delete_all_records(self, **kwargs):
         """Deletes all records for the user."""
-        return self._request('delete', '/', **kwargs)
+        return self._request('delete', '', **kwargs)
 
     def get_records(self, collection, full=False, ids=None, newer=None,
                     limit=None, offset=None, sort=None, decrypt=False,
