@@ -41,8 +41,8 @@ FXA_CONF_URI = "https://{}/.well-known/fxa-client-configuration".format(
     FXA_CONF_HOST)
 FXA_SIGNIN_URI = "https://{}/signin".format(FXA_CONF_HOST)
 
-FXA_CLIENT_NAME = 'Python Sync Client'
-FXA_CLIENT_VERSION_MAJOR = '0.9'
+FXA_CLIENT_NAME = 'qutesyncclient'
+FXA_CLIENT_VERSION_MAJOR = '0.1'
 FXA_CLIENT_VERSION = FXA_CLIENT_VERSION_MAJOR + '.0.dev0'
 FXA_USER_AGENT_DEFAULT = ('Mozilla/5.0 ({} {}; rv:{})'
                           ' Gecko/20100101 {}/{}').format(
@@ -320,8 +320,7 @@ def get_fxa_session(email, fxa_server_url=None, **kwargs):
     if update_session:
         write_session_cache(session_data)
 
-    client_name = 'CLI Session, {} {}'.format(FXA_CLIENT_NAME,
-                                              FXA_CLIENT_VERSION_MAJOR)
+    client_name = FXA_CLIENT_NAME
     fxa_ensure_devicename(fxa_session, client_name)
 
     fxa_session._config = kwargs
@@ -748,6 +747,50 @@ class SyncClient(object):
 
         return content
 
+    def _encrypt_bso(self, cleartext, keys=None):
+        if keys is None:
+            if self._crypto_keys is None:
+                raise SyncClientError('No crypto keys available')
+
+            try:
+                keys = self._crypto_keys['default']
+                keys = (base64.b64decode(keys[0]), base64.b64decode(keys[1]))
+            except KeyError:
+                raise SyncClientError('No default crypto keys available!')
+
+        if not isinstance(cleartext, six.string_types):
+            cleartext = json.dumps(cleartext).encode('utf-8')
+
+        encryption_key = keys[0]
+        hmac_key = keys[1]
+
+        # sync (still) uses AES-CBC-256
+        aes = algorithms.AES(encryption_key)
+        iv = os.urandom(16)
+        aead_sync = Cipher(aes, modes.CBC(iv), backend=default_backend())
+
+        padder = padding.PKCS7(aes.block_size).padder()
+        cleartext = padder.update(cleartext) + padder.finalize()
+
+        # decrypt...
+        encryptor = aead_sync.encryptor()
+
+        ciphertext = encryptor.update(cleartext) + encryptor.finalize()
+
+        authenticator = hmac.HMAC(hmac_key, hashes.SHA256(),
+                                  backend=backend)
+
+        authenticator.update(base64.b64encode(ciphertext))
+
+        payload = json.dumps({
+            'ciphertext': base64.b64encode(ciphertext).decode('utf-8'),
+            'IV': base64.b64encode(iv).decode('utf-8'),
+            'hmac': authenticator.finalize().hex()
+        })
+
+        return payload
+
+
     def info_configuration(self, **kwargs):
         """
         Returns an object mapping configured service limits associated with the
@@ -940,10 +983,20 @@ class SyncClient(object):
         if isinstance(record, six.string_types):
             record = json.loads(record)
         record = record.copy()
-        record_id = record.pop('id')
+        record_id = record['id']
+        # record_id = record.pop('id')
         headers = {}
         if 'headers' in kwargs:
             headers = kwargs.pop('headers')
+        if 'encrypt' in kwargs:
+            if kwargs.pop('encrypt'):
+                record_id = record['id']
+                record = {
+                    'id': record_id,
+                    'payload': self._encrypt_bso(record)
+                }
+                if kwargs.get('ttl') is not None:
+                    record['ttl'] = kwargs.pop('ttl')
 
         headers['Content-Type'] = 'application/json; charset=utf-8'
 
@@ -1141,7 +1194,7 @@ class SyncClient(object):
                 ):
             raise SyncClientError('Collection was not modified')
 
-    def post_records(self, collection, records, **kwargs):
+    def post_record(self, collection, record, **kwargs):
         """
         Takes a list of BSOs in the request body and iterates over them,
         effectively doing a series of individual PUTs with the same timestamp.
@@ -1182,4 +1235,27 @@ class SyncClient(object):
         certain number of BSOs in a single request. The default limit on the
         number of BSOs per request is 100.
         """
-        pass
+        # XXX: Workaround until request-hawk supports the json parameter. (#17)
+        if isinstance(record, six.string_types):
+            record = json.loads(record)
+        record = record.copy()
+        record_id = record['id']
+        # record_id = record.pop('id')
+        headers = {}
+        if 'headers' in kwargs:
+            headers = kwargs.pop('headers')
+        if 'encrypt' in kwargs:
+            if kwargs.pop('encrypt'):
+                record_id = record['id']
+                record = {
+                    'id': record_id,
+                    'payload': self._encrypt_bso(record)
+                }
+                if kwargs.get('ttl') is not None:
+                    record['ttl'] = kwargs.pop('ttl')
+
+        headers['Content-Type'] = 'application/json; charset=utf-8'
+
+        return self._request('post', '/storage/%s' % (
+            collection.lower()), data=json.dumps([record]),
+            headers=headers, **kwargs)
