@@ -1195,6 +1195,9 @@ class SyncClient(object):
             raise SyncClientError('Collection was not modified')
 
     def post_record(self, collection, record, **kwargs):
+        self.post_records(collection, [record], **kwargs)
+
+    def post_records(self, collection, records, encrypt=False, **kwargs):
         """
         Takes a list of BSOs in the request body and iterates over them,
         effectively doing a series of individual PUTs with the same timestamp.
@@ -1236,26 +1239,31 @@ class SyncClient(object):
         number of BSOs per request is 100.
         """
         # XXX: Workaround until request-hawk supports the json parameter. (#17)
-        if isinstance(record, six.string_types):
-            record = json.loads(record)
-        record = record.copy()
-        record_id = record['id']
-        # record_id = record.pop('id')
         headers = {}
         if 'headers' in kwargs:
             headers = kwargs.pop('headers')
-        if 'encrypt' in kwargs:
-            if kwargs.pop('encrypt'):
+        ttl = kwargs.pop('ttl', None)
+
+        def prepare_record(record):
+            if isinstance(record, six.string_types):
+                record = json.loads(record)
+            record = record.copy()
+            record_id = record['id']
+            # record_id = record.pop('id')
+            if encrypt:
                 record_id = record['id']
                 record = {
                     'id': record_id,
                     'payload': self._encrypt_bso(record)
                 }
-                if kwargs.get('ttl') is not None:
-                    record['ttl'] = kwargs.pop('ttl')
+            if ttl is not None:
+                record['ttl'] = ttl
+            return record
+
+        records = [prepare_record(r) for r in records]
 
         headers['Content-Type'] = 'application/json; charset=utf-8'
 
         return self._request('post', '/storage/%s' % (
-            collection.lower()), data=json.dumps([record]),
+            collection.lower()), data=json.dumps(records),
             headers=headers, **kwargs)
